@@ -44,16 +44,3 @@ def classify_status(
         return "목표 도달"
     return "하방 이탈"
 
-
-def format_price(value: float | None) -> str:
-    """가격은 반올림한 정수와 천 단위 콤마로 표시합니다."""
-    if value is None:
-        return "N/A"
-    return f"{round(value):,}"
-
-
-def format_percent(value: float | None) -> str:
-    """퍼센트는 소수점 1자리와 % 기호로 표시합니다."""
-    if value is None:
-        return "N/A"
-    return f"{value:,.1f}%"

@@ -21,8 +21,6 @@ from calculations import (
     calculate_adjustment_rate,
     calculate_price_gap,
     classify_status,
-    format_percent,
-    format_price,
 )
 from data_fetcher import add_current_prices, fetch_price_history
 from db import (
@@ -76,6 +74,20 @@ def to_int_price(value: object) -> int:
         if not value or value.upper() == "N/A":
             return 0
     return int(round(float(value)))
+
+
+def format_price(value: float | None) -> str:
+    """가격은 반올림한 정수와 천 단위 콤마로 표시합니다."""
+    if value is None:
+        return "N/A"
+    return f"{round(value):,}"
+
+
+def format_percent(value: float | None) -> str:
+    """퍼센트는 소수점 1자리와 % 기호로 표시합니다."""
+    if value is None:
+        return "N/A"
+    return f"{value:,.1f}%"
 
 
 def validate_item(
