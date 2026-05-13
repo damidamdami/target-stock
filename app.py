@@ -1,5 +1,5 @@
 """
-주식 목표가 추적 대시보드
+주식 목표가 추적 웹 대시보드
 
 이 앱은 상승 목표가를 자동 계산하는 도구가 아닙니다. 사용자가 차트나
 피보나치 기준으로 직접 정한 "되돌림 목표가"를 입력하면, 현재가가 그
@@ -18,29 +18,29 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from calculations import (
+    calculate_adjustment_rate,
     calculate_price_gap,
-    calculate_pullback_progress,
-    calculate_target_gap_rate,
     classify_status,
     format_percent,
     format_price,
 )
 from data_fetcher import add_current_prices, fetch_price_history
 from db import (
-    add_item,
-    delete_item,
-    get_watchlist,
+    add_stock,
+    delete_stock,
+    get_stocks,
     init_db,
+    is_theme_column_available,
     is_valid_stock_code,
     normalize_stock_code,
     normalize_user_id,
     stock_code_exists,
-    update_item,
+    update_stock,
 )
 
 
 st.set_page_config(
-    page_title="주식 목표가 추적 대시보드",
+    page_title="주식 목표가 추적 웹 대시보드",
     page_icon="📊",
     layout="wide",
 )
@@ -71,14 +71,18 @@ def to_int_price(value: object) -> int:
     """가격 입력값을 정수로 반올림합니다."""
     if value is None or pd.isna(value):
         return 0
+    if isinstance(value, str):
+        value = value.replace(",", "").strip()
+        if not value or value.upper() == "N/A":
+            return 0
     return int(round(float(value)))
 
 
 def validate_item(
     user_id: str,
+    theme: str,
     name: str,
     stock_code: str,
-    recent_high: int,
     target_price: int,
     exclude_id: Any | None = None,
 ) -> str | None:
@@ -89,8 +93,6 @@ def validate_item(
         return "종목명을 입력해 주세요."
     if not is_valid_stock_code(stock_code):
         return "종목번호는 005930처럼 6자리 숫자로 입력해 주세요."
-    if recent_high <= 0:
-        return "최근 고점은 0보다 커야 합니다."
     if target_price <= 0:
         return "목표가는 0보다 커야 합니다."
     if stock_code_exists(user_id, stock_code, exclude_id=exclude_id):
@@ -105,16 +107,10 @@ def build_dashboard_data(watchlist: pd.DataFrame) -> pd.DataFrame:
 
     for _, row in priced.iterrows():
         current_price = to_optional_float(row.get("current_price"))
-        recent_high = to_optional_float(row.get("recent_high"))
         target_price = to_optional_float(row.get("target_price"))
 
         price_gap = calculate_price_gap(current_price, target_price)
-        gap_rate = calculate_target_gap_rate(current_price, target_price)
-        progress = calculate_pullback_progress(
-            current_price,
-            recent_high,
-            target_price,
-        )
+        adjustment_rate = calculate_adjustment_rate(current_price, target_price)
         status = classify_status(current_price, target_price)
 
         rows.append(
@@ -122,8 +118,7 @@ def build_dashboard_data(watchlist: pd.DataFrame) -> pd.DataFrame:
                 **row.to_dict(),
                 "current_price": current_price,
                 "price_gap": price_gap,
-                "gap_rate": gap_rate,
-                "pullback_progress": progress,
+                "adjustment_rate": adjustment_rate,
                 "status": status,
             }
         )
@@ -139,39 +134,41 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
     editor_df = dashboard_df[
         [
             "id",
+            "theme",
             "name",
             "stock_code",
-            "recent_high",
             "target_price",
             "current_price",
             "price_gap",
-            "gap_rate",
-            "pullback_progress",
+            "adjustment_rate",
             "status",
             "memo",
         ]
     ].copy()
 
-    # 가격 컬럼은 정수 기준으로 보여주고 저장합니다.
-    for column in ["recent_high", "target_price", "current_price", "price_gap"]:
-        editor_df[column] = editor_df[column].apply(
-            lambda value: None if pd.isna(value) else int(round(float(value)))
-        )
+    editor_df["theme"] = editor_df["theme"].fillna("")
+    editor_df["memo"] = editor_df["memo"].fillna("")
 
     editor_df = editor_df.rename(
         columns={
             "id": "ID",
+            "theme": "테마",
             "name": "종목명",
             "stock_code": "종목번호",
-            "recent_high": "최근 고점",
             "target_price": "목표가",
             "current_price": "현재가",
             "price_gap": "목표가와의 차이",
-            "gap_rate": "목표가 대비 괴리율(%)",
-            "pullback_progress": "조정 진행률(%)",
+            "adjustment_rate": "조정 진행률(%)",
             "status": "상태",
             "memo": "메모",
         }
+    )
+    for column in ["목표가", "현재가", "목표가와의 차이"]:
+        editor_df[column] = editor_df[column].apply(
+            lambda value: "N/A" if pd.isna(value) else format_price(float(value))
+        )
+    editor_df["조정 진행률(%)"] = editor_df["조정 진행률(%)"].apply(
+        lambda value: "N/A" if pd.isna(value) else format_percent(float(value))
     )
     return editor_df
 
@@ -182,14 +179,6 @@ def make_csv_table(editor_df: pd.DataFrame) -> pd.DataFrame:
         return editor_df
 
     csv_df = editor_df.copy()
-    for column in ["최근 고점", "목표가", "현재가", "목표가와의 차이"]:
-        csv_df[column] = csv_df[column].apply(
-            lambda value: "N/A" if pd.isna(value) else format_price(value)
-        )
-    for column in ["목표가 대비 괴리율(%)", "조정 진행률(%)"]:
-        csv_df[column] = csv_df[column].apply(
-            lambda value: "N/A" if pd.isna(value) else format_percent(float(value))
-        )
     return csv_df.drop(columns=["ID"], errors="ignore")
 
 
@@ -213,15 +202,15 @@ def render_summary_cards(dashboard_df: pd.DataFrame) -> None:
     near_count = int((dashboard_df["status"] == "목표 근접").sum())
     reached_count = int((dashboard_df["status"] == "목표 도달").sum())
     failed_count = int((dashboard_df["status"] == "조회 실패").sum())
-    progress_values = dashboard_df["pullback_progress"].dropna()
-    avg_progress = progress_values.mean() if not progress_values.empty else None
+    adjustment_values = dashboard_df["adjustment_rate"].dropna()
+    avg_adjustment = adjustment_values.mean() if not adjustment_values.empty else None
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("전체 종목 수", f"{total_count:,}개")
     col2.metric("목표 근접", f"{near_count:,}개")
     col3.metric("목표 도달", f"{reached_count:,}개")
     col4.metric("조회 실패", f"{failed_count:,}개")
-    col5.metric("평균 조정 진행률", format_percent(avg_progress))
+    col5.metric("평균 조정 진행률", format_percent(avg_adjustment))
 
 
 def render_user_id_input() -> str:
@@ -242,14 +231,9 @@ def render_add_form(user_id: str) -> None:
     """사이드바에 신규 종목 등록 폼을 표시합니다."""
     st.sidebar.header("종목 등록")
     with st.sidebar.form("add_watchlist_form", clear_on_submit=True):
+        theme = st.text_input("테마", placeholder="반도체 장비")
         name = st.text_input("종목명", placeholder="한미반도체")
         stock_code = st.text_input("종목번호", placeholder="042700", max_chars=6)
-        recent_high = st.number_input(
-            "최근 고점",
-            min_value=0,
-            step=100,
-            format="%d",
-        )
         target_price = st.number_input(
             "목표가",
             min_value=0,
@@ -263,13 +247,12 @@ def render_add_form(user_id: str) -> None:
         return
 
     clean_code = normalize_stock_code(stock_code)
-    recent_high_value = to_int_price(recent_high)
     target_price_value = to_int_price(target_price)
     error = validate_item(
         user_id,
+        theme,
         name,
         clean_code,
-        recent_high_value,
         target_price_value,
     )
     if error:
@@ -277,7 +260,7 @@ def render_add_form(user_id: str) -> None:
         return
 
     try:
-        add_item(user_id, name, clean_code, recent_high_value, target_price_value, memo)
+        add_stock(user_id, theme, name, clean_code, target_price_value, memo)
         st.sidebar.success("종목이 등록되었습니다.")
         st.rerun()
     except Exception as exc:
@@ -295,17 +278,17 @@ def save_editor_changes(user_id: str, edited_df: pd.DataFrame) -> None:
 
     for _, row in edited_df.iterrows():
         item_id = row["ID"]
+        theme = "" if pd.isna(row["테마"]) else str(row["테마"]).strip()
         name = str(row["종목명"]).strip()
         stock_code = normalize_stock_code(str(row["종목번호"]))
-        recent_high = to_int_price(row["최근 고점"])
         target_price = to_int_price(row["목표가"])
         memo = "" if pd.isna(row["메모"]) else str(row["메모"])
 
         error = validate_item(
             user_id,
+            theme,
             name,
             stock_code,
-            recent_high,
             target_price,
             exclude_id=item_id,
         )
@@ -314,12 +297,12 @@ def save_editor_changes(user_id: str, edited_df: pd.DataFrame) -> None:
             continue
 
         try:
-            update_item(
+            update_stock(
                 user_id,
                 item_id,
+                theme,
                 name,
                 stock_code,
-                recent_high,
                 target_price,
                 memo,
             )
@@ -343,6 +326,7 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
 
     column_config = {
         "ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
+        "테마": st.column_config.TextColumn("테마"),
         "종목명": st.column_config.TextColumn("종목명", required=True),
         "종목번호": st.column_config.TextColumn(
             "종목번호",
@@ -350,38 +334,21 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             required=True,
             max_chars=6,
         ),
-        "최근 고점": st.column_config.NumberColumn(
-            "최근 고점",
-            min_value=0,
-            step=1,
-            format="%d",
-            required=True,
-        ),
-        "목표가": st.column_config.NumberColumn(
+        "목표가": st.column_config.TextColumn(
             "목표가",
-            min_value=0,
-            step=1,
-            format="%d",
+            help="정수 또는 140,000처럼 콤마가 있는 숫자로 입력할 수 있습니다.",
             required=True,
         ),
-        "현재가": st.column_config.NumberColumn(
+        "현재가": st.column_config.TextColumn(
             "현재가",
-            format="%d",
             disabled=True,
         ),
-        "목표가와의 차이": st.column_config.NumberColumn(
+        "목표가와의 차이": st.column_config.TextColumn(
             "목표가와의 차이",
-            format="%d",
             disabled=True,
         ),
-        "목표가 대비 괴리율(%)": st.column_config.NumberColumn(
-            "목표가 대비 괴리율(%)",
-            format="%.1f",
-            disabled=True,
-        ),
-        "조정 진행률(%)": st.column_config.NumberColumn(
+        "조정 진행률(%)": st.column_config.TextColumn(
             "조정 진행률(%)",
-            format="%.1f",
             disabled=True,
         ),
         "상태": st.column_config.TextColumn("상태", disabled=True),
@@ -395,15 +362,29 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "ID",
             "현재가",
             "목표가와의 차이",
-            "목표가 대비 괴리율(%)",
             "조정 진행률(%)",
             "상태",
+        ],
+        column_order=[
+            "테마",
+            "종목명",
+            "종목번호",
+            "목표가",
+            "현재가",
+            "목표가와의 차이",
+            "조정 진행률(%)",
+            "상태",
+            "메모",
         ],
         hide_index=True,
         use_container_width=True,
         num_rows="fixed",
         key="watchlist_editor",
     )
+
+    if "ID" not in edited_df.columns:
+        edited_df = edited_df.copy()
+        edited_df["ID"] = editor_df["ID"].values
 
     col1, col2 = st.columns([1, 3])
     if col1.button("변경사항 저장", type="primary", use_container_width=True):
@@ -429,7 +410,7 @@ def render_delete_panel(user_id: str, watchlist: pd.DataFrame) -> None:
         return
 
     options = {
-        f"{row['name']} / {row['stock_code']}": int(row["id"])
+        f"{row['name']} / {row['stock_code']}": row["id"]
         for _, row in watchlist.iterrows()
     }
     selected_label = st.selectbox("삭제 대상 선택", list(options.keys()))
@@ -437,7 +418,7 @@ def render_delete_panel(user_id: str, watchlist: pd.DataFrame) -> None:
 
     if st.button("선택한 종목 삭제", type="secondary"):
         try:
-            delete_item(user_id, selected_id)
+            delete_stock(user_id, selected_id)
             st.warning("선택한 종목이 삭제되었습니다.")
             st.rerun()
         except Exception as exc:
@@ -474,13 +455,6 @@ def render_price_chart(dashboard_df: pd.DataFrame) -> None:
         )
     )
     fig.add_hline(
-        y=float(selected["recent_high"]),
-        line_dash="dash",
-        line_color="#f59e0b",
-        annotation_text="최근 고점",
-        annotation_position="top left",
-    )
-    fig.add_hline(
         y=float(selected["target_price"]),
         line_dash="dash",
         line_color="#16a34a",
@@ -504,7 +478,7 @@ def main() -> None:
     """Streamlit 앱 진입점입니다."""
     init_db()
 
-    st.title("주식 목표가 추적 대시보드")
+    st.title("주식 목표가 추적 웹 대시보드")
     st.caption(
         "직접 입력한 되돌림 목표가에 현재가가 얼마나 가까워졌는지 확인합니다. "
         "현재가 조회 실패 시 N/A와 조회 실패 상태로 표시됩니다."
@@ -515,10 +489,24 @@ def main() -> None:
         st.info("왼쪽 사이드바에서 사용자 ID를 입력하면 Supabase watchlist를 불러옵니다.")
         return
 
+    try:
+        theme_available = is_theme_column_available()
+    except Exception as exc:
+        st.error("Supabase watchlist 테이블 정보를 확인하지 못했습니다.")
+        st.code(str(exc), language="text")
+        return
+
+    if not theme_available:
+        st.warning(
+            "Supabase watchlist 테이블에 theme 컬럼이 아직 없습니다. "
+            "README의 SQL을 실행하면 테마를 저장할 수 있습니다. "
+            "현재는 테마가 빈칸으로 표시되고 저장 시 테마 값은 생략됩니다."
+        )
+
     render_add_form(user_id)
 
     try:
-        watchlist = get_watchlist(user_id)
+        watchlist = get_stocks(user_id)
     except Exception as exc:
         st.error("Supabase watchlist 데이터를 불러오지 못했습니다.")
         st.info(
