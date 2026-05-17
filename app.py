@@ -18,8 +18,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from calculations import (
-    calculate_adjustment_rate,
     calculate_price_gap,
+    calculate_remaining_pullback_rate,
     classify_status,
 )
 from data_fetcher import add_current_prices, fetch_price_history
@@ -122,7 +122,10 @@ def build_dashboard_data(watchlist: pd.DataFrame) -> pd.DataFrame:
         target_price = to_optional_float(row.get("target_price"))
 
         price_gap = calculate_price_gap(current_price, target_price)
-        adjustment_rate = calculate_adjustment_rate(current_price, target_price)
+        remaining_pullback_rate = calculate_remaining_pullback_rate(
+            current_price,
+            target_price,
+        )
         status = classify_status(current_price, target_price)
 
         rows.append(
@@ -130,7 +133,7 @@ def build_dashboard_data(watchlist: pd.DataFrame) -> pd.DataFrame:
                 **row.to_dict(),
                 "current_price": current_price,
                 "price_gap": price_gap,
-                "adjustment_rate": adjustment_rate,
+                "remaining_pullback_rate": remaining_pullback_rate,
                 "status": status,
             }
         )
@@ -152,7 +155,7 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
             "target_price",
             "current_price",
             "price_gap",
-            "adjustment_rate",
+            "remaining_pullback_rate",
             "status",
             "memo",
         ]
@@ -170,7 +173,7 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
             "target_price": "목표가",
             "current_price": "현재가",
             "price_gap": "목표가와의 차이",
-            "adjustment_rate": "조정 진행률(%)",
+            "remaining_pullback_rate": "목표가까지 남은 조정률(%)",
             "status": "상태",
             "memo": "메모",
         }
@@ -179,7 +182,9 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
         editor_df[column] = editor_df[column].apply(
             lambda value: "N/A" if pd.isna(value) else format_price(float(value))
         )
-    editor_df["조정 진행률(%)"] = editor_df["조정 진행률(%)"].apply(
+    editor_df["목표가까지 남은 조정률(%)"] = editor_df[
+        "목표가까지 남은 조정률(%)"
+    ].apply(
         lambda value: "N/A" if pd.isna(value) else format_percent(float(value))
     )
     return editor_df
@@ -214,15 +219,15 @@ def render_summary_cards(dashboard_df: pd.DataFrame) -> None:
     near_count = int((dashboard_df["status"] == "목표 근접").sum())
     reached_count = int((dashboard_df["status"] == "목표 도달").sum())
     failed_count = int((dashboard_df["status"] == "조회 실패").sum())
-    adjustment_values = dashboard_df["adjustment_rate"].dropna()
-    avg_adjustment = adjustment_values.mean() if not adjustment_values.empty else None
+    remaining_values = dashboard_df["remaining_pullback_rate"].dropna()
+    avg_remaining = remaining_values.mean() if not remaining_values.empty else None
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("전체 종목 수", f"{total_count:,}개")
     col2.metric("목표 근접", f"{near_count:,}개")
     col3.metric("목표 도달", f"{reached_count:,}개")
     col4.metric("조회 실패", f"{failed_count:,}개")
-    col5.metric("평균 조정 진행률", format_percent(avg_adjustment))
+    col5.metric("평균 남은 조정률", format_percent(avg_remaining))
 
 
 def render_user_id_input() -> str:
@@ -359,8 +364,8 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "목표가와의 차이",
             disabled=True,
         ),
-        "조정 진행률(%)": st.column_config.TextColumn(
-            "조정 진행률(%)",
+        "목표가까지 남은 조정률(%)": st.column_config.TextColumn(
+            "목표가까지 남은 조정률(%)",
             disabled=True,
         ),
         "상태": st.column_config.TextColumn("상태", disabled=True),
@@ -374,7 +379,7 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "ID",
             "현재가",
             "목표가와의 차이",
-            "조정 진행률(%)",
+            "목표가까지 남은 조정률(%)",
             "상태",
         ],
         column_order=[
@@ -384,7 +389,7 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "목표가",
             "현재가",
             "목표가와의 차이",
-            "조정 진행률(%)",
+            "목표가까지 남은 조정률(%)",
             "상태",
             "메모",
         ],
