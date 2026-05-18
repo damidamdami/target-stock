@@ -54,6 +54,21 @@ STATUS_COLORS = {
     "목표가 확인": "#9333ea",
 }
 
+DISPLAY_COLUMNS = [
+    "테마",
+    "종목명",
+    "종목번호",
+    "목표가",
+    "현재가",
+    "목표가와의 차이",
+    "목표가까지 남은 조정률(%)",
+    "상태",
+    "메모",
+]
+
+PRICE_COLUMNS = ["목표가", "현재가", "목표가와의 차이"]
+RATE_COLUMN = "목표가까지 남은 조정률(%)"
+
 
 def to_optional_float(value: object) -> float | None:
     """NaN, 빈 값, 변환 불가 값을 None으로 바꿉니다."""
@@ -141,12 +156,12 @@ def build_dashboard_data(watchlist: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
-    """st.data_editor에 넣을 표를 만듭니다."""
+def make_dashboard_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
+    """대시보드 표에 넣을 숫자형 유지 DataFrame을 만듭니다."""
     if dashboard_df.empty:
         return pd.DataFrame()
 
-    editor_df = dashboard_df[
+    table_df = dashboard_df[
         [
             "id",
             "theme",
@@ -161,10 +176,11 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
         ]
     ].copy()
 
-    editor_df["theme"] = editor_df["theme"].fillna("")
-    editor_df["memo"] = editor_df["memo"].fillna("")
+    table_df["theme"] = table_df["theme"].fillna("")
+    table_df["memo"] = table_df["memo"].fillna("")
+    table_df["stock_code"] = table_df["stock_code"].astype(str)
 
-    editor_df = editor_df.rename(
+    table_df = table_df.rename(
         columns={
             "id": "ID",
             "theme": "테마",
@@ -178,16 +194,14 @@ def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
             "memo": "메모",
         }
     )
-    for column in ["목표가", "현재가", "목표가와의 차이"]:
-        editor_df[column] = editor_df[column].apply(
-            lambda value: "N/A" if pd.isna(value) else format_price(float(value))
-        )
-    editor_df["목표가까지 남은 조정률(%)"] = editor_df[
-        "목표가까지 남은 조정률(%)"
-    ].apply(
-        lambda value: "N/A" if pd.isna(value) else format_percent(float(value))
-    )
-    return editor_df
+    for column in PRICE_COLUMNS + [RATE_COLUMN]:
+        table_df[column] = pd.to_numeric(table_df[column], errors="coerce")
+    return table_df
+
+
+def make_editor_table(dashboard_df: pd.DataFrame) -> pd.DataFrame:
+    """st.data_editor에 넣을 숫자형 유지 표를 만듭니다."""
+    return make_dashboard_table(dashboard_df)
 
 
 def make_csv_table(editor_df: pd.DataFrame) -> pd.DataFrame:
@@ -195,8 +209,7 @@ def make_csv_table(editor_df: pd.DataFrame) -> pd.DataFrame:
     if editor_df.empty:
         return editor_df
 
-    csv_df = editor_df.copy()
-    return csv_df.drop(columns=["ID"], errors="ignore")
+    return editor_df.drop(columns=["ID"], errors="ignore")[DISPLAY_COLUMNS]
 
 
 def style_status(row: pd.Series) -> list[str]:
@@ -211,6 +224,39 @@ def style_status(row: pd.Series) -> list[str]:
         else:
             styles.append("")
     return styles
+
+
+def style_pullback_attention(row: pd.Series) -> list[str]:
+    """목표가 근처 접근 종목과 목표 도달 종목을 행 단위로 은은하게 강조합니다."""
+    rate = row.get(RATE_COLUMN)
+    if pd.isna(rate):
+        return ["" for _ in row]
+    if -10 <= float(rate) < 0:
+        return ["background-color: #fff7cc; color: #111827;" for _ in row]
+    if float(rate) >= 0:
+        return ["background-color: #dcfce7; color: #111827;" for _ in row]
+    return ["" for _ in row]
+
+
+def make_display_styler(table_df: pd.DataFrame):
+    """읽기용 표에 콤마/퍼센트 표시와 조건부 색상 강조를 적용합니다."""
+    return (
+        table_df.drop(columns=["ID"], errors="ignore")[DISPLAY_COLUMNS]
+        .style.format(
+            {
+                "목표가": lambda value: "N/A" if pd.isna(value) else format_price(value),
+                "현재가": lambda value: "N/A" if pd.isna(value) else format_price(value),
+                "목표가와의 차이": lambda value: "N/A"
+                if pd.isna(value)
+                else format_price(value),
+                RATE_COLUMN: lambda value: "N/A"
+                if pd.isna(value)
+                else format_percent(value),
+            }
+        )
+        .apply(style_pullback_attention, axis=1)
+        .apply(style_status, axis=1)
+    )
 
 
 def render_summary_cards(dashboard_df: pd.DataFrame) -> None:
@@ -341,6 +387,23 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
     st.subheader("대시보드 표")
     editor_df = make_editor_table(dashboard_df)
 
+    st.dataframe(
+        make_display_styler(editor_df),
+        column_config={
+            "종목번호": st.column_config.TextColumn("종목번호"),
+            "목표가": st.column_config.NumberColumn("목표가", format="%d"),
+            "현재가": st.column_config.NumberColumn("현재가", format="%d"),
+            "목표가와의 차이": st.column_config.NumberColumn(
+                "목표가와의 차이",
+                format="%d",
+            ),
+            RATE_COLUMN: st.column_config.NumberColumn(RATE_COLUMN, format="%.1f%%"),
+        },
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption("아래 표에서 테마, 종목명, 종목번호, 목표가, 메모를 수정할 수 있습니다.")
+
     column_config = {
         "ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
         "테마": st.column_config.TextColumn("테마"),
@@ -351,21 +414,26 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             required=True,
             max_chars=6,
         ),
-        "목표가": st.column_config.TextColumn(
+        "목표가": st.column_config.NumberColumn(
             "목표가",
-            help="정수 또는 140,000처럼 콤마가 있는 숫자로 입력할 수 있습니다.",
+            min_value=0,
+            step=1,
+            format="%d",
             required=True,
         ),
-        "현재가": st.column_config.TextColumn(
+        "현재가": st.column_config.NumberColumn(
             "현재가",
+            format="%d",
             disabled=True,
         ),
-        "목표가와의 차이": st.column_config.TextColumn(
+        "목표가와의 차이": st.column_config.NumberColumn(
             "목표가와의 차이",
+            format="%d",
             disabled=True,
         ),
-        "목표가까지 남은 조정률(%)": st.column_config.TextColumn(
-            "목표가까지 남은 조정률(%)",
+        RATE_COLUMN: st.column_config.NumberColumn(
+            RATE_COLUMN,
+            format="%.1f",
             disabled=True,
         ),
         "상태": st.column_config.TextColumn("상태", disabled=True),
@@ -379,7 +447,7 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "ID",
             "현재가",
             "목표가와의 차이",
-            "목표가까지 남은 조정률(%)",
+            RATE_COLUMN,
             "상태",
         ],
         column_order=[
@@ -389,7 +457,7 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "목표가",
             "현재가",
             "목표가와의 차이",
-            "목표가까지 남은 조정률(%)",
+            RATE_COLUMN,
             "상태",
             "메모",
         ],
