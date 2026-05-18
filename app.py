@@ -242,18 +242,7 @@ def make_display_styler(table_df: pd.DataFrame):
     """읽기용 표에 콤마/퍼센트 표시와 조건부 색상 강조를 적용합니다."""
     return (
         table_df.drop(columns=["ID"], errors="ignore")[DISPLAY_COLUMNS]
-        .style.format(
-            {
-                "목표가": lambda value: "N/A" if pd.isna(value) else format_price(value),
-                "현재가": lambda value: "N/A" if pd.isna(value) else format_price(value),
-                "목표가와의 차이": lambda value: "N/A"
-                if pd.isna(value)
-                else format_price(value),
-                RATE_COLUMN: lambda value: "N/A"
-                if pd.isna(value)
-                else format_percent(value),
-            }
-        )
+        .style
         .apply(style_pullback_attention, axis=1)
         .apply(style_status, axis=1)
     )
@@ -391,11 +380,11 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
         make_display_styler(editor_df),
         column_config={
             "종목번호": st.column_config.TextColumn("종목번호"),
-            "목표가": st.column_config.NumberColumn("목표가", format="%d"),
-            "현재가": st.column_config.NumberColumn("현재가", format="%d"),
+            "목표가": st.column_config.NumberColumn("목표가", format="localized"),
+            "현재가": st.column_config.NumberColumn("현재가", format="localized"),
             "목표가와의 차이": st.column_config.NumberColumn(
                 "목표가와의 차이",
-                format="%d",
+                format="localized",
             ),
             RATE_COLUMN: st.column_config.NumberColumn(RATE_COLUMN, format="%.1f%%"),
         },
@@ -418,17 +407,17 @@ def render_dashboard_editor(user_id: str, dashboard_df: pd.DataFrame) -> pd.Data
             "목표가",
             min_value=0,
             step=1,
-            format="%d",
+            format="localized",
             required=True,
         ),
         "현재가": st.column_config.NumberColumn(
             "현재가",
-            format="%d",
+            format="localized",
             disabled=True,
         ),
         "목표가와의 차이": st.column_config.NumberColumn(
             "목표가와의 차이",
-            format="%d",
+            format="localized",
             disabled=True,
         ),
         RATE_COLUMN: st.column_config.NumberColumn(
